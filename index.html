@@ -1,34 +1,42 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Foklorent Download</title>
-    <style>
-        body {
-            background-color: #0f0f0f;
-            color: #ffffff;
-            font-family: Arial, sans-serif;
-            text-align: center;
-            padding-top: 100px;
-        }
+from flask import Flask, request, jsonify
+import os
+import base64
+from datetime import datetime
 
-        .download-button {
-            background-color: #1e90ff;
-            color: white;
-            padding: 15px 30px;
-            font-size: 18px;
-            text-decoration: none;
-            border-radius: 8px;
-            transition: background-color 0.3s ease;
-        }
+app = Flask(__name__)
 
-        .download-button:hover {
-            background-color: #007acc;
-        }
-    </style>
-</head>
-<body>
-    <h1>Download Foklorent for Windows</h1>
-    <a href="https://drive.google.com/uc?export=download&id=138Pf1xQxsRDOFzglcOSkvnFqtphHFpPV" class="download-button">Download EXE</a>
-</body>
-</html>
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+@app.route("/upload", methods=["POST"])
+def upload():
+    data = request.get_json()
+
+    lat = data.get("lat")
+    lon = data.get("lon")
+    image_data = data.get("image")  # base64 PNG data URL
+
+    print(f"GPS souřadnice: lat={lat}, lon={lon}")
+
+    # Oříznout prefix 'data:image/png;base64,' z base64 stringu
+    header = "data:image/png;base64,"
+    if image_data.startswith(header):
+        image_data = image_data[len(header):]
+
+    try:
+        img_bytes = base64.b64decode(image_data)
+    except Exception as e:
+        print("Chyba dekódování obrázku:", e)
+        return jsonify({"status": "error", "message": "invalid image data"}), 400
+
+    filename = datetime.now().strftime("photo_%Y%m%d_%H%M%S_%f.png")
+    filepath = os.path.join(UPLOAD_FOLDER, filename)
+
+    with open(filepath, "wb") as f:
+        f.write(img_bytes)
+
+    print(f"Uloženo {filename}")
+    return jsonify({"status": "ok"})
+
+if __name__ == "__main__":
+    app.run(debug=True)

@@ -1,69 +1,101 @@
 <!DOCTYPE html>
-<html lang="cs">
+<html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Fotka + GPS odesílání</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Všichni vidí všechny</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; }
+    video { width: 200px; margin: 10px; border: 1px solid black; }
+    #videos { display: flex; flex-wrap: wrap; justify-content: center; }
+  </style>
 </head>
 <body>
-<h1>Fotka + GPS odesílání</h1>
+  <h1>Videochat: Všichni vidí všechny</h1>
+  <div id="videos">
+    <video id="localVideo" autoplay muted playsinline></video>
+  </div>
 
-<div id="status">Čekám na povolení kamery a polohy...</div>
-<video id="video" autoplay playsinline width="320" height="240" style="border:1px solid black;"></video>
+  <script>
+    const localVideo = document.getElementById("localVideo");
+    const videosDiv = document.getElementById("videos");
+    const peers = {};
 
-<script>
-const statusDiv = document.getElementById("status");
-const video = document.getElementById("video");
+    const ws = new WebSocket("wss://tvuj-server.cz/ws"); // <-- ZMĚŃ na adresu svého signaling serveru
 
-async function start() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-    video.srcObject = stream;
-  } catch(e) {
-    statusDiv.textContent = "Kamera nebyla povolena nebo není dostupná.";
-    return;
-  }
+    navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
+      localVideo.srcObject = stream;
 
-  if (!("geolocation" in navigator)) {
-    statusDiv.textContent = "GPS není dostupná v tomto prohlížeči.";
-    return;
-  }
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: "join" }));
+      };
 
-  navigator.geolocation.getCurrentPosition(
-    pos => {
-      statusDiv.textContent = "Povolení získáno, začínám fotit a posílat data...";
-      captureAndSend(pos.coords.latitude, pos.coords.longitude);
-    },
-    err => {
-      statusDiv.textContent = "GPS nebyla povolena nebo není dostupná.";
-    }
-  );
-}
+      ws.onmessage = async (msg) => {
+        const data = JSON.parse(msg.data);
 
-function captureAndSend(lat, lon) {
-  const canvas = document.createElement("canvas");
-  canvas.width = video.videoWidth || 320;
-  canvas.height = video.videoHeight || 240;
-  const ctx = canvas.getContext("2d");
+        if (data.type === "users") {
+          for (const id of data.users) {
+            if (id !== data.you) {
+              const pc = createPeerConnection(id);
+              peers[id] = pc;
+              stream.getTracks().forEach(track => pc.addTrack(track, stream));
+            }
+          }
+        }
 
-  setInterval(() => {
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const imageData = canvas.toDataURL("image/png");
+        if (data.type === "offer") {
+          const pc = createPeerConnection(data.from);
+          peers[data.from] = pc;
+          stream.getTracks().forEach(track => pc.addTrack(track, stream));
+          await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          ws.send(JSON.stringify({ type: "answer", to: data.from, answer }));
+        }
 
-    fetch("https://tvuj-server.herokuapp.com/upload", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        lat: lat,
-        lon: lon,
-        image: imageData
-      })
+        if (data.type === "answer") {
+          await peers[data.from].setRemoteDescription(new RTCSessionDescription(data.answer));
+        }
+
+        if (data.type === "ice-candidate") {
+          if (peers[data.from]) {
+            try {
+              await peers[data.from].addIceCandidate(new RTCIceCandidate(data.candidate));
+            } catch (e) {}
+          }
+        }
+      };
+
+      function createPeerConnection(id) {
+        const pc = new RTCPeerConnection();
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            ws.send(JSON.stringify({ type: "ice-candidate", to: id, candidate: event.candidate }));
+          }
+        };
+
+        pc.ontrack = (event) => {
+          let video = document.getElementById("video-" + id);
+          if (!video) {
+            video = document.createElement("video");
+            video.id = "video-" + id;
+            video.autoplay = true;
+            video.playsInline = true;
+            videosDiv.appendChild(video);
+          }
+          video.srcObject = event.streams[0];
+        };
+
+        pc.onnegotiationneeded = async () => {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          ws.send(JSON.stringify({ type: "offer", to: id, offer }));
+        };
+
+        return pc;
+      }
     });
-  }, 5000);
-}
-
-start();
-</script>
-
+  </script>
 </body>
 </html>

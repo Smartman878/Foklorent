@@ -1,42 +1,69 @@
-from flask import Flask, request, jsonify
-import os
-import base64
-from datetime import datetime
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fotka + GPS odesílání</title>
+</head>
+<body>
+<h1>Fotka + GPS odesílání</h1>
 
-app = Flask(__name__)
+<div id="status">Čekám na povolení kamery a polohy...</div>
+<video id="video" autoplay playsinline width="320" height="240" style="border:1px solid black;"></video>
 
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+<script>
+const statusDiv = document.getElementById("status");
+const video = document.getElementById("video");
 
-@app.route("/upload", methods=["POST"])
-def upload():
-    data = request.get_json()
+async function start() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    video.srcObject = stream;
+  } catch(e) {
+    statusDiv.textContent = "Kamera nebyla povolena nebo není dostupná.";
+    return;
+  }
 
-    lat = data.get("lat")
-    lon = data.get("lon")
-    image_data = data.get("image")  # base64 PNG data URL
+  if (!("geolocation" in navigator)) {
+    statusDiv.textContent = "GPS není dostupná v tomto prohlížeči.";
+    return;
+  }
 
-    print(f"GPS souřadnice: lat={lat}, lon={lon}")
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      statusDiv.textContent = "Povolení získáno, začínám fotit a posílat data...";
+      captureAndSend(pos.coords.latitude, pos.coords.longitude);
+    },
+    err => {
+      statusDiv.textContent = "GPS nebyla povolena nebo není dostupná.";
+    }
+  );
+}
 
-    # Oříznout prefix 'data:image/png;base64,' z base64 stringu
-    header = "data:image/png;base64,"
-    if image_data.startswith(header):
-        image_data = image_data[len(header):]
+function captureAndSend(lat, lon) {
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth || 320;
+  canvas.height = video.videoHeight || 240;
+  const ctx = canvas.getContext("2d");
 
-    try:
-        img_bytes = base64.b64decode(image_data)
-    except Exception as e:
-        print("Chyba dekódování obrázku:", e)
-        return jsonify({"status": "error", "message": "invalid image data"}), 400
+  setInterval(() => {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const imageData = canvas.toDataURL("image/png");
 
-    filename = datetime.now().strftime("photo_%Y%m%d_%H%M%S_%f.png")
-    filepath = os.path.join(UPLOAD_FOLDER, filename)
+    fetch("https://tvuj-server.herokuapp.com/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lat: lat,
+        lon: lon,
+        image: imageData
+      })
+    });
+  }, 5000);
+}
 
-    with open(filepath, "wb") as f:
-        f.write(img_bytes)
+start();
+</script>
 
-    print(f"Uloženo {filename}")
-    return jsonify({"status": "ok"})
-
-if __name__ == "__main__":
-    app.run(debug=True)
+</body>
+</html>
